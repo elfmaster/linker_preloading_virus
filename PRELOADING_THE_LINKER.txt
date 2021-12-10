@@ -9,8 +9,9 @@ linux/fs/binfmt_elf.c) to pass execution to a custom program interpreter
 instead of the real dynamic linker. 
 
 Note that the term 'program interpreter' usually refers to the dynamic linker,
-i.e. "/lib64/ld-linux.so". This paper is about creating an alternate program
-interpreter which is loaded prior to the dynamic linker itself.
+i.e. "/lib64/ld-linux.so". Also known as the RTLD (Runtime dynamic linker).
+This paper is about creating an alternate 'program interpreter' which is loaded
+prior to the dynamic linker itself.
 
 Do not confuse the "linker preloading" technique with shared library
 preloading. Such as with LD_PRELOAD, which instructs the dynamic linker to
@@ -22,7 +23,7 @@ possibilities are vast, one could build a system for process instrumentation,
 module-loading, and program transformation.  Our example runtime linker is just
 a minimal example of a module loader, which loads relocatable objects into
 memory and creates a runtime environment for modules to execute prior to the
-LDSO.
+RTLD.
 
 From an attackers perspective one could use this system to easily design
 rootkits, viruses, and other APT (Advanced persistent threats) variants. From a
@@ -36,7 +37,7 @@ preloading.
 
 Let us first elaborate on how this Linker preloading technique works. Recall
 that dynamically linked executables have a program header type called
-'PT_INTERP' which holds the path to the LDSO, usually "/lib64/ld-linux.so".
+'PT_INTERP' which holds the path to the RTLD, usually "/lib64/ld-linux.so".
 This path can easily be replaced with the path of the program interpreter that
 we wish to preload. We say "preload" because we are loading our custom
 interpreter prior to the real interpreter, the LDSO.
@@ -55,7 +56,6 @@ $ readelf -l /bin/ls | grep -C 2 INTERP
 We can see that the interpreter path offset is at offset 0x318 within the ELF
 file. This NULL terminated string can be replaced with "/lib64/evil.ld", which
 is the path to our custom runtime linker.
-
 
 Execution flow of linker preloading
 [kernel]
@@ -177,7 +177,7 @@ imagination as to how this concept could be employed in many brilliant and uniqu
 
 Let us discuss our design goal. We want to write a custom interpreter who's purpose
 is to surreptitiously load an execute code prior to passing control to the real
-dynamic linker "/lib64/ld-linux.so".
+dynamic linker "/lib64/ld-linux.so" (aka RTLD).
 
 When we speak of loading an executing a module we should first get an idea of what
 we mean by a module. A module can be defined as a C program who's entry point is
@@ -593,7 +593,33 @@ $ readelf -l host1 | grep interpreter
       [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
 
 
-Now let us run 'test' and see what it's effects on the other binaries in the directory are...
+Let us build the interpreter, the virus module, and the test program.
+
+$ git clone https://github.com/elfmaster/linker_preloading_virus
+$ cd linker_preloading_virus
+$ make 2> out
+musl-gcc -DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c lp_interp.c -o lp_interp.o
+musl-gcc -DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c lp_iter.c -o lp_iter.o
+musl-gcc -DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c lp_util.c -o lp_util.o
+musl-gcc -DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c lp_proc.c -o lp_proc.o
+musl-gcc -DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c lp_parse_elf.c -o lp_parse_elf.o
+musl-gcc -DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c libelfmaster.c -o libelfmaster.o
+musl-gcc -DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c internal.c -o internal.o
+musl-gcc -DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c lp_load_ldso.c -o lp_load_ldso.o
+musl-gcc -DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c lp_loader.c -o lp_loader.o
+musl-gcc -D_GNU_SOURCE -Wl,-undefined=printf -Wl,-undefined=readdir -Wl,-undefined=opendir -T ./ld.script -static -g lp_interp.o lp_util.o \
+	lp_proc.o lp_iter.o lp_parse_elf.o lp_load_ldso.o lp_loader.o \
+	libelfmaster.o internal.o -o lp_interp
+mkdir -p /opt/evil_linker/
+cp lp_interp /lib64/evil.ld
+$ make tests
+gcc -ggdb -Wl,--dynamic-linker="/lib64/evil.ld" test.c -o test
+elfmaster@arcana:~/git/linker_preloading_virus$ make virus 
+gcc -c virus_payload.c -fno-stack-protector
+cp virus_payload.o virus_test/
+cp test virus_test/
+
+Now let us run the ./test program and see what it's effects are.
 
 $ cd virus_test
 $ ./test
@@ -619,5 +645,27 @@ $ readelf -l host1 | grep interpreter
 
 We have now demonstrated a fully functional modular runtime loader for ELF viruses
 and process memory rootkits.
+
+
+-= In closing
+
+We have demonstrated a technique for intercepting the Linux ELF runtime with a custom
+program interpreter and used to create a modular ELF Virus loading mechanism.
+
+I do not intend to utilize the technology presented in this paper for any future
+Virus research, although I do hope that the Virus and Rootkit community appreciate
+it's elegant qualities.
+
+I mostly find the technology interesting for developing new techniques
+in runtime transformation and patching as it pertains to advancing the
+Linux runtime into a modular and programmable system for loading modules,
+plugins and code patches.
+
+https://github.com/elfmaster/linker_preloading_virus
+
+- ElfMaster
+- ryan@bitlackeys.org
+
+
 
 
