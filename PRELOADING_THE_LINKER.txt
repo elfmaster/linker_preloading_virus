@@ -40,12 +40,12 @@ that dynamically linked executables have a program header type called
 'PT_INTERP' which holds the path to the RTLD, usually "/lib64/ld-linux.so".
 This path can easily be replaced with the path of the program interpreter that
 we wish to preload. We say "preload" because we are loading our custom
-interpreter prior to the real interpreter, the LDSO.
+interpreter prior to the real interpreter, the Linux RTLD.
 
 NOTE: Terms "Runtime Linker" and "Program interpreter" are used interchangeably in
 this paper.
 
-Let's take a quick look at the PT_INTERP segment of any dynamic ELF executable.
+Let's take a quick look at the PT_INTERP segment of any dynam
 
 $ readelf -l /bin/ls | grep -C 2 INTERP
   
@@ -57,7 +57,8 @@ We can see that the interpreter path offset is at offset 0x318 within the ELF
 file. This NULL terminated string can be replaced with "/lib64/evil.ld", which
 is the path to our custom runtime linker.
 
-Execution flow of linker preloading
+-= Execution flow of linker preloading
+
 [kernel]
 	\
 	[/lib64/evil.ld]------------------>[/lib64/ld-linux.so]---------------->[/bin/ls]
@@ -68,13 +69,14 @@ Execution flow of linker preloading
 As we can see in the ascii diagram above. The kernel reads the PT_INTERP
 segment to get the path to the program interpreter. Execution flow is
 transferred to /lib64/evil.ld which is our custom program interpreter for
-loading and linking runtime modules. This creates a runtime environment that is
-modular and dynamic for parasitic code without tripping the usual detection
-heuristics by ELF infection. This infection technique is by itself benign as
-it's final outcome is determined by the code within the module itself. In our
-PoC the module is a Virus which infects other binaries by replacing their
-interpreter path to point to "/lib64/evil.ld" which in turn causes the
-infected binary to load the "virus_module.o", and so on and so forth.
+loading and linking runtime modules. This creates a runtime environment for
+parasitic code that is modular and dynamic while not tripping the usual
+detection heuristics for ELF infections.  This infection technique is by itself
+benign as it's intentions are determined by the code within the module
+itself. In our PoC the module is a Virus which infects other binaries by
+replacing their interpreter path to point to "/lib64/evil.ld" which in turn
+causes the infected binary to load the "virus_module.o", and so on and so
+forth.
 
 -= The Linux kernel ELF loader
 
@@ -168,29 +170,33 @@ the entry point address of the program interpreter.
 
 	... snippet ...
 
-We can see that start_thread() is invoked to execute the code at the entry point
-address of the interpreter. What a beautiful place to hook! We can instruct the kernel
-ELF loader to run an arbitrary program (the program interpreter). One can only use their
-imagination as to how this concept could be employed in many brilliant and unique ways.
+We can see that start_thread() is invoked to execute the code at the entry
+point address of the interpreter. What a beautiful place to hook! We can
+instruct the kernel ELF loader to run an arbitrary program (the specified
+program interpreter). One can only use their imagination as to how this concept
+could be employed in many brilliant and unique ways.
 
 -= Designing a custom interpreter for loading modules
 
-Let us discuss our design goal. We want to write a custom interpreter who's purpose
-is to surreptitiously load an execute code prior to passing control to the real
-dynamic linker "/lib64/ld-linux.so" (aka RTLD).
+Let us discuss our design goal. We want to write a custom interpreter who's
+purpose is to surreptitiously load an execute modular code prior to passing
+control to the real dynamic linker "/lib64/ld-linux.so" (aka RTLD).
 
-When we speak of loading an executing a module we should first get an idea of what
-we mean by a module. A module can be defined as a C program who's entry point is
-main(). The C code may make calls to libc. When the code is compiled into a relocatable
-code object it has all of the relocation data necessary to link it into an ELF executable
-runtime image with a PLT and a GOT for resolving calls into libc. Since our interpreter
-is running before the dynamic linker, how then do we expect our module to make libc
-calls? The musl-libc library is statically linked into the interpreter and we can
-handle PLT call relocations by resolving them to the libc symbols within the custom
-interpreter itself. This can of course be improved upon, but for now having access
-to only libc is still enough to write fairly sophisticated modules.
+Our modules are written in C and compiled as relocatable objects. The module
+entry point is main(). The C code may make calls to libc. When the code is
+compiled into a relocatable code object it has all of the relocation data
+necessary to link it into an executable ELF runtime image with a PLT and a GOT
+for resolving calls into libc.  Since our interpreter is running before the
+dynamic linker, how then do we expect our module to make libc calls? The
+musl-libc library is statically linked into the interpreter and we can handle
+PLT call relocations by resolving them to the libc symbols within the custom
+interpreter itself. This can of course be improved upon, but for now having
+access to only libc is still enough to write fairly sophisticated modules
+without alot of work.
 
 Let us take a look at the module source code which serves as the Virus payload.
+It has no malicious payload rather it simply just copies itself by infecting
+other binaries by manipulating the PT_INTERP segment.
 
 https://github.com/elfmaster/linker_preloading_virus/virus_payload.c
 
@@ -301,11 +307,12 @@ int main(int argc, char **argv)
         return 0;
 }
 
-The virus_payload.c module looks for all of uninfected ELF files in the local directory
-and infects them by replacing the interpreter path with "/lib64/evil.ld" 
+The virus_payload.c module looks for all of uninfected ELF files in the local
+directory and infects them by replacing the interpreter path with
+"/lib64/evil.ld" 
 
-Let's compile virus_payload.c into a relocatable object and take a look at which
-relocation types are created for linking purposes.
+Let's compile virus_payload.c into a relocatable object and take a look at
+which relocation types are created for linking purposes.
 
 $ gcc -c virus_payload.c
 $ readelf -r virus_payload.o
@@ -347,84 +354,87 @@ LOW MEMORY				      HIGH MEMORY
 
 2. Parse the auxiliary vector and store it's values for later use
 
-The auxiliary vector contains key/value pairs that are pertinent to the dynamic linker's ability
-to locate itself and the target executable in memory. It contains key/value pairs that are also important
-to our custom interpreter.
+The auxiliary vector contains key/value pairs that are pertinent to the dynamic
+linker's ability to locate itself and the target executable in memory. It
+contains key/value pairs that are also important to our custom interpreter.
 
-3. Parse the target ELF executable. The ELF file path is pointed to by the auxiliary vector entry AT_EXECFN.
+3. Map the dynamic linker segments "/lib64/ld-linux.so" into memory.
 
-Our interpreter will eventually pass control to the dynamic linker who'
-the PT_INTERP segment in the target executable.
+We need to map each PT_LOAD segment of the dynamic linker "/lib64/ld-linux.so"
+into memory at the correct page aligned virtual address. The entry point
+address taken from the ELF file header is an offset value that must be computed
+with the base address of the text segment and stored for later use in step 10.
 
-4. Map the dynamic linker "/lib64/ld-linux.so" into memory.
+4. Set the auxiliary vector entry AT_BASE to the address of the text segment of
+the now mapped in "/lib64/ld-linux.so".
 
-We need to map each PT_LOAD segment of the dynamic linker "/lib64/ld-linux.so" into memory
-at the correct page aligned virtual address. The entry point address taken from the ELF
-file header is an offset value that must be computed with the base address of the text segment
-and stored for later use in step 10.
-
-5. Set the auxiliary vector entry AT_BASE to the address of the text segment of the now mapped
-in "/lib64/ld-linux.so".
-
-Auxiliary vector values are just stack values and can thus be re-written. When the kernel maps the
-program interpreter into memory it sets the auxiliary entry AT_BASE to the base address of the
-mapped ELF interpreter. 
+Auxiliary vector values are just stack values and can thus be re-written. When
+the kernel maps the program interpreter into memory it sets the auxiliary entry
+AT_BASE to the base address of the mapped ELF interpreter. 
 
 When we transfer execution flow from one interpreter (i.e. "/lib64/evil.ld") to
-another (i.e. "/lib64/ld-linux.so"), the source interpreter must reset AT_BASE from
-it's own base address to the base address of the destination interpreter.
-Interpreter's must know their own base address if they are PIE so that they can perform
-relative relocations on their own code and data at runtime. The dynamic linker is a shared
-library and requires many relocations that compute it's own base address.
+another (i.e. "/lib64/ld-linux.so"), the source interpreter must reset AT_BASE
+from it's own base address to the base address of the destination interpreter.
+Interpreter's must know their own base address if they are PIE so that they can
+perform relative relocations on their own code and data at runtime. The dynamic
+linker is a shared library and requires many relocations that compute it's own
+base address.
 
-6. Parse the relocatable object module file 'virus_payload.o'
+5. Parse the relocatable object module file 'virus_payload.o'
 
-The relocation table should be parsed. Any relocations of type R_X86_64_PLT32 should be
-noted so that enough room can be created in the text segment for PLT stubs. In our implementation
-of "/lib64/evil.ld" We use strict linking, and therefore have very simple PLT stubs:
+The relocation table should be parsed. Any relocations of type R_X86_64_PLT32
+should be noted so that enough room can be created in the text segment for PLT
+stubs. In our implementation of "/lib64/evil.ld" We use strict linking, and
+therefore have very simple PLT stubs:
 
 
 lp_loader.c:18
 ```
-// jmp *0x0(%rip)
-uint8_t plt_stub[6] = "\xff\x25\x00\x00\x00\x00";
+ // jmp *0x0(%rip)
+ uint8_t plt_stub[6] = "\xff\x25\x00\x00\x00\x00";
 ```
 
-The PLT stub simply does an indirect jump to the respective GOT[entry]. Our linker implementation
-is somewhat naive as we create a PLT entry for every PLT relocation. Sometimes there are multiple PLT
-relocations for the same symbol, and our naive linker creates duplicate PLT/GOT's. This can be easily
-ironed out in a future version so that a given symbol always corresponds to a single PLT entry.
+The PLT stub simply does an indirect jump to the respective GOT[entry]. Our
+linker implementation is somewhat naive as we create a PLT entry for every PLT
+relocation. Sometimes there are multiple PLT relocations for the same symbol,
+and our naive linker creates duplicate PLT/GOT's. This can be easily ironed out
+in a future version so that a given symbol always corresponds to a single PLT
+entry.
 
-7. Create an executable runtime environment suitable for the module to execute within.
-   A text segment, data segment, and .bss must be created with anonymous memory mappings using mmap(2).
+6. Create an executable runtime environment suitable for the module to execute
+within.  A text segment, data segment, and .bss must be created with anonymous
+memory mappings using mmap(2).
 
-Our goal is to create an executable runtime image out of a relocatable object file. There are no PT_LOAD
-segments in a relocatable object so we must determine the size of the text and data segment by looking
-at the corresonding section headers. 
+Our goal is to create an executable runtime image out of a relocatable object
+file. There are no PT_LOAD segments in a relocatable object so we must
+determine the size of the text and data segment by looking at the corresonding
+section headers. 
 
 All sections of type SHF_ALLOC and SHF_ALLOC|SHF_EXEC should be mapped into the
 text segment. 
 
 All sections of type SHF_ALLOC|SHF_WRITE shall be mapped into the data segment. 
 
-The .bss size is stored in it's section header's sh_size member. Make sure to extend the data segment
-by shdr[.bss].sh_size bytes.
+The .bss size is stored in it's section header's sh_size member. Make sure to
+extend the data segment mapping by shdr[.bss].sh_size bytes.
 
-We do not need to create a heap segment, as any calls to malloc() will be run through musl-libc
-which is statically linked to our interpreter. Therefore the module will share a heap segment with
-the interpreter.
+We do not need to create a heap segment, as any calls to malloc() will be run
+through musl-libc which is statically linked to our interpreter. Therefore the
+module will share a heap segment with the interpreter.
 
-8. Resolve all relocations for the module object.
+7. Resolve all relocations for the module object.
    
-The module may make calls to libc which will be made possible by creating PLT and GOT entries
-for the R_X86_64_PLT32 relocations found in the relocatable object. External calls to libc will
-be resolved to the musl-libc symbols that will be statically linked into our interpreter. 
+The module may make calls to libc which will be made possible by creating PLT
+and GOT entries for the R_X86_64_PLT32 relocations found in the relocatable
+object. External calls to libc will be resolved to the musl-libc symbols that
+will be statically linked into our interpreter. 
 
-Our example module 'virus_payload.o' only contains R_X86_64_PLT32 and R_X86_64_PC32 relocation
-types, which is all our linker currently handles. See `bool relocate_module(struct evil_linker *linker)`
-in lp_loader.c.
+Our example module 'virus_payload.o' only contains R_X86_64_PLT32 and
+R_X86_64_PC32 relocation types, which is all our linker currently handles. See
+`bool relocate_module(struct evil_linker *linker)` in lp_loader.c.
 
-Let us take a quick look at how to resolve the relocation's that are in our module object.
+Let us take a quick look at how to resolve the relocation's that are in our
+module object.
 
 Relocation section '.rela.text' at offset 0x970 contains 34 entries:
   Offset          Info           Type           Sym. Value    Sym. Name + Addend
@@ -433,37 +443,44 @@ Relocation section '.rela.text' at offset 0x970 contains 34 entries:
 ... truncated ...
 
 
-Resolving the R_X86_64_PLT32 relocation type requires that we first have created a PLT within
-the executable runtime image. Our linker implementation places the PLT at the very end of the text
-segment. Call instructions that resolve to external symbols have a PLT32 relocation that must be
-resolved. In-fact the compiler may also emit PLT32 relocations for calls to all GLOBAL symbol
-types, even if they are defined locally within the module.
+Resolving the R_X86_64_PLT32 relocation type requires that we first have
+created a PLT within the modules executable image. Our linker implementation places
+the PLT at the very end of the text segment. Call instructions that resolve to
+external symbols have a PLT32 relocation that must be resolved. In-fact the
+compiler may also emit PLT32 relocations for calls to all GLOBAL symbol types,
+even if they are defined locally within the module.
 
-The R_X86_64_PLT32 relocation is for computing and patching in the call offset to a given PLT entry.
-According to the ELF specification the following computation resolves the relocation: L + A - P
+The R_X86_64_PLT32 relocation is for computing and patching in the call offset
+to a given PLT entry.  According to the ELF specification the following
+computation resolves the relocation: L + A - P
 
-This can be broken down to: [open@plt] + rel->r_addend - (text_segment_addr + rel->r_offset)
+This can be broken down to: 
+[open@plt] + rel->r_addend - (text_segment_addr + rel->r_offset)
 
 
-The R_X86_64_PC32 relocation is used for patching offsets to various instructions that reference
-memory, and requires the following computation: S + A - P
+The R_X86_64_PC32 relocation is used for patching offsets to various
+instructions that reference memory, and requires the following computation:
+S + A - P
 
-This can be broken down to [symval of .rodata] + rel->r_addend - (text_segment_addr + rel->r_offset)
+This can be broken down to:
+[symval of .rodata] + rel->r_addend - (text_segment_addr + rel->r_offset)
 
 Our implementation of this can be found in lp_loader.c:apply_relocation()
 
-Once the module has been transformed into an executable runtime image who's relocations have been
-fully satisified we can transfer control from our interpreter to the loaded module.
+Once the module has been transformed into an executable runtime image who's
+relocations have been fully satisified we can transfer control from our
+interpreter to the loaded module.
 
-9. Transfer control to the modules main() function with a call instruction.
+8. Transfer control to the modules main() function with a call instruction.
 
-We transfer control to our Virus module with a call instruction, so that execution flow returns.
-The module's entry point is the address of the symbol "main". Once the Virus module has finished
-executing, control is passed back to our interpreter.
+We transfer control to our Virus module with a call instruction, so that
+execution flow returns.  The module's entry point is the address of the symbol
+"main". Once the Virus module has finished executing, control is passed back to
+our interpreter.
 
 ```
 static inline void
-transfer_to_module(struct evil_linker *linker, uint64_t entry)
+transfer_to_module(uint64_t entry)
 {
         __asm__ __volatile__ ("mov %0, %%rax\n"
                               "call %%rax" :: "r" (entry));
@@ -471,10 +488,11 @@ transfer_to_module(struct evil_linker *linker, uint64_t entry)
 }
 ```
 
-10. Transfer control to the Dynamic Linker "/lib64/ld-linux.so"
+9. Transfer control to the Dynamic Linker "/lib64/ld-linux.so"
 
-The dynamic linker is mapped into memory by now, and we should have it's entry point value
-stored from step 4. Here are the steps to transferring control to the dynamic linker:
+The dynamic linker is mapped into memory by now, and we should have it's entry
+point value stored from step 4. Here are the steps to transferring control to
+the dynamic linker:
 
 	1. Clear all of the register values
  
@@ -512,9 +530,9 @@ stored from step 4. Here are the steps to transferring control to the dynamic li
                                             "ret" :: "r" (stack), "g" (addr), "g"(entry))
 	```
 
-Once control is passed to the RTLD our work is done. The RTLD will handle any relocations for
-loading shared objects and patching the target executable. RTLD will then transfer control to the
-executable's entry point.
+Once control is passed to the RTLD our work is done. The RTLD will handle any
+relocations for loading shared objects and patching the target executable. RTLD
+will then transfer control to the executable's entry point.
 
 -= Compiling and linking our interpreter
 
@@ -528,12 +546,13 @@ be built as a PIE executable or a shared library like the RTLD.
 - A note on symbol resolution:
 
 When our virus_payload.c code attempts to call musl-libc functions that aren't
-in the symbol table of our ELF interpreter they will fail to be resolved.
-All of the musl-libc functions that are not being used by the Interpreter will
-not be included in it's symbol table, which we rely on for module
-symbol resolution. A workaround solution is to just include every libc symbol
-being invoked by your module code into the Makefile for the interpreter using
-the ld flag '-undefined=<symbol>'.
+in the symbol table of our ELF interpreter they will fail to be resolved.  All
+of the musl-libc functions that are not being used by the Interpreter will not
+be included in it's symbol table, which we rely on for module symbol
+resolution. A workaround solution is to just include every libc symbol being
+invoked by your module code into the Makefile for the interpreter using the ld
+flag '-undefined=<symbol>'. Another option is to use the linker flag '--whole-archive'
+so that all possible symbols from libc are included into the interpreter binary.
 
 - Building a test program
 
@@ -582,11 +601,11 @@ total 96
 -rw-rw-r-- 1 elfmaster elfmaster  4544 Dec  9 15:26 virus_payload.o
 $
 
-The ELF executable 'test' will launch /lib64/evil.ld, and in turn it will link, load
-and execute virus_payload.o
+The ELF executable 'test' will launch /lib64/evil.ld, and in turn it will link,
+load and execute virus_payload.o
 
-The virus_payload.o reads the current working directory and looks for other ELF binaries
-to infect: host1, host2, host3
+The virus_payload.o reads the current working directory and looks for other ELF
+binaries to infect: host1, host2, host3
 
 Let's take a quick look at the interpreter path in 'host1' before we run 'test'.
 
@@ -637,36 +656,35 @@ Successfully infected file 'host1'
 I am 'test'. The Host binary of the linker virus
 $
 
-As we can see from the output above our evil linker was preloaded by the kernel,
-and it successfully loaded an executed the module 'virus_payload.o'. The other ELF
-binaries within the CWD are infected by PT_INTERP modification.
+As we can see from the output above our evil linker was preloaded by the
+kernel, and it successfully loaded an executed the module 'virus_payload.o'.
+The other ELF binaries within the CWD are infected by PT_INTERP modification.
 
 $ readelf -l host1 | grep interpreter
       [Requesting program interpreter: /lib64/evil.ld]
 
-We have now demonstrated a fully functional modular runtime loader for ELF viruses
-and process memory rootkits.
-
+We have now demonstrated a fully functional modular runtime loader for ELF
+viruses and process memory rootkits... Huzzah
 
 -= In closing
 
-We have demonstrated a technique for intercepting the Linux ELF runtime with a custom
-program interpreter and used to create a modular ELF Virus loading mechanism.
+We have demonstrated a technique for intercepting the Linux ELF runtime with a
+custom program interpreter designed to create a modular ELF Virus loading
+mechanism.
 
-I do not intend to utilize the technology presented in this paper for any future
-Virus research, although I do hope that the Virus and Rootkit community appreciate
-it's elegant qualities.
+I do not intend to utilize the technology presented in this paper for any
+future Virus research, although I do hope that the Virus and Rootkit community
+appreciate it's elegant qualities.
 
-I mostly find the technology interesting for developing new techniques
-in runtime transformation and patching as it pertains to advancing the
-Linux runtime into a modular and programmable system for loading modules,
-plugins and code patches.
+I mostly find the technology interesting for developing new techniques in
+runtime transformation and patching as it pertains to advancing the Linux
+runtime into a modular and programmable system for loading modules, plugins and
+code patches.
 
 https://github.com/elfmaster/linker_preloading_virus
 
 - ElfMaster
 - ryan@bitlackeys.org
-
 
 
 
