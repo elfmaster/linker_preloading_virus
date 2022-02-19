@@ -3,35 +3,35 @@
 
 -= Introduction
 
-Let's begin this paper by defining "Linker preloading". This technique refers
-to the idea that one can maniuplate the kernels ELF loader (see
-linux/fs/binfmt_elf.c) to pass execution to a custom program interpreter
+Let's jump right in, and begin this paper by defining "Linker preloading". This
+technique refers to the idea that one can maniuplate the kernels ELF loader
+(see linux/fs/binfmt_elf.c) to pass execution to a custom program interpreter
 instead of the real dynamic linker. 
 
 Note that the term 'program interpreter' usually refers to the dynamic linker,
-i.e. "/lib64/ld-linux.so". Also known as the RTLD (Runtime dynamic linker).
+i.e. "/lib64/ld-linux.so". Also known as the RTLD (Runtime loader).
 This paper is about creating an alternate 'program interpreter' which is loaded
 prior to the dynamic linker itself.
 
-Do not confuse the "linker preloading" technique with shared library
-preloading. Such as with LD_PRELOAD, which instructs the dynamic linker to
-preload a specific set of shared libraries before all others.  The technique of
-linker preloading preloads the dynamic linker itself. It requires that we design a
-custom runtime linker that runs prior to and independently of the dynamic
-linker. One must ask then, what would this custom runtime linker do? The
-possibilities are vast, one could build a system for process instrumentation,
-module-loading, and program transformation.  Our example runtime linker is just
-a minimal example of a module loader, which loads relocatable objects into
-memory and creates a runtime environment for modules to execute prior to the
-RTLD.
+Do not confuse the "linker preloading" technique with "shared library
+preloading". The LD_PRELOAD environment variable instructs the dynamic linker
+to preload a specific set of shared libraries before all others.  The technique
+that we are presenting preloads the dynamic linker (i.e. "/lib64/ld-linux.so")
+and an alternative program interpreter is invoked instead.
 
-From an attackers perspective one could use this system to easily design
+When pondering the concept of writing a custom ELF program interpreter, we realize
+that the possiblities are vast. Process isntrumentation, module loading,
+program transformation, etc.  Our example runtime linker is just a minimal
+example of a module loader, which loads relocatable objects into memory and
+creates a runtime environment for modules to execute prior to the RTLD.
+
+From an attackers perspective one can use this concept to trivially design
 rootkits, viruses, and other APT (Advanced persistent threats) variants. From a
 security perspective I see the possibility of using the concepts from this
 paper to build security modules for hardening the process image and mitigating
-many types of attacks. However, in the spirit of being exotic and innovative I have decided to
-weaponize this concept into a modular Virus infector that spreads itself via linker
-preloading.
+many types of attacks. However, in the spirit of being exotic and innovative I
+have decided to weaponize this concept into a modular Virus infector that
+spreads itself via linker preloading.
 
 -= Understanding the technique
 
@@ -192,7 +192,7 @@ to only libc is still enough to write fairly sophisticated modules.
 
 Let us take a look at the module source code which serves as the Virus payload.
 
-https://github.com/elfmaster/evil.ld/virus_payload.c
+https://github.com/elfmaster/linker_preloading_virus/virus_payload.c
 
 #define EVIL_LINKER_PATH "/opt/evil_linker/evil.ld"
 
@@ -351,9 +351,9 @@ The auxiliary vector contains key/value pairs that are pertinent to the dynamic 
 to locate itself and the target executable in memory. It contains key/value pairs that are also important
 to our custom interpreter.
 
-3. Parse the target ELF executable. The executable file path is pointed to by the auxiliary vector entry AT_EXECFN.
+3. Parse the target ELF executable. The ELF file path is pointed to by the auxiliary vector entry AT_EXECFN.
 
-Our interpreter will eventually pass control to the dynamic linker who's path is specified by
+Our interpreter will eventually pass control to the dynamic linker who'
 the PT_INTERP segment in the target executable.
 
 4. Map the dynamic linker "/lib64/ld-linux.so" into memory.
@@ -363,7 +363,8 @@ at the correct page aligned virtual address. The entry point address taken from 
 file header is an offset value that must be computed with the base address of the text segment
 and stored for later use in step 10.
 
-5. Set the auxiliary vector entry AT_BASE to the base address of the now mapped in dynamic linker
+5. Set the auxiliary vector entry AT_BASE to the address of the text segment of the now mapped
+in "/lib64/ld-linux.so".
 
 Auxiliary vector values are just stack values and can thus be re-written. When the kernel maps the
 program interpreter into memory it sets the auxiliary entry AT_BASE to the base address of the
