@@ -29,6 +29,7 @@
 #define ELF_PAGEOFFSET(_v) ((_v) & (ELF_MIN_ALIGN-1))
 #define ELF_PAGEALIGN(_v, _a) (((_v) + _a - 1) & ~(_a - 1))
 
+#define EVIL_LINKER_PATH "/lib64/evil.ld"
 #define LDSO_PATH "/lib64/ld-linux-x86-64.so.2"
 
 typedef struct lp_auxv_iterator {

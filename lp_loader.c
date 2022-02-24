@@ -60,7 +60,7 @@ resolve_pltgot_entries(struct evil_linker *linker)
 	struct elf_symbol symbol;
 	int i;
 
-	if (elf_open_object("/home/elfmaster/git/ldso_preloading/lp_interp", &self, ELF_LOAD_F_STRICT,
+	if (elf_open_object(EVIL_LINKER_PATH, &self, ELF_LOAD_F_STRICT,
 	    &error) == false) {
 		lp_debug("elf_open_object(%s, ...) failed: %s\n",
 		    "/proc/self/exe", elf_error_msg(&error));
